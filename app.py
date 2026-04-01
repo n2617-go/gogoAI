@@ -6,8 +6,8 @@ import numpy as np
 from datetime import datetime
 import time
 
-st.set_page_config(page_title="台股看盤神器", layout="wide")
-st.title("📈 台股即時看盤（穩定最終版）")
+st.set_page_config(page_title="大師加持版", layout="wide")
+st.title("📈 大師加持版開發中（v2）")
 
 stocks = [
     {"id": "2330", "name": "台積電"},

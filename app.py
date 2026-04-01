@@ -311,6 +311,36 @@ def inject_localstorage_helper():
 # ══════════════════════════════════════════════════════════
 import re as _re
 
+# ── 內建常用台股中文名稱對照表（離線備援）──────────────────
+_BUILTIN_NAME_MAP = {
+    # 上市權值股
+    "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2382": "廣達",
+    "2308": "台達電", "2881": "富邦金", "2882": "國泰金", "2891": "中信金",
+    "2886": "兆豐金", "2884": "玉山金", "2892": "第一金", "2880": "華南金",
+    "2885": "元大金", "2887": "台新金", "2883": "開發金", "2890": "永豐金",
+    "2888": "新光金", "5880": "合庫金", "2302": "聯電", "2303": "聯電",
+    "2357": "華碩", "2379": "瑞昱", "2395": "研華", "2412": "中華電",
+    "2002": "中鋼",  "1301": "台塑",  "1303": "南亞",  "1326": "台化",
+    "6505": "台塑化","2207": "和泰車","2474": "可成",  "3711": "日月光投控",
+    "2408": "南亞科","2337": "旺宏",  "3034": "聯詠",  "3008": "大立光",
+    "2353": "宏碁",  "2356": "英業達","2376": "技嘉",  "2385": "群光",
+    "2392": "正崴",  "2404": "漢唐",  "2441": "超豐",  "2449": "京元電子",
+    "2迷603": "櫻花", "1216": "統一",  "1101": "台泥",  "1102": "亞泥",
+    "1402": "遠紡",  "2609": "陽明",  "2615": "萬海",  "2603": "長榮",
+    "2610": "華航",  "2618": "長榮航","2912": "統一超","2801": "彰銀",
+    "1590": "亞德客","6669": "緯穎",  "6770": "力積電","4938": "和碩",
+    "3045": "台灣大","4904": "遠傳",  "2498": "宏達電","2344": "華邦電",
+    "2327": "國巨",  "2360": "致茂",  "3037": "欣興",  "3044": "健鼎",
+    "6415": "矽力-KY","4919": "新唐", "2059": "川湖",  "5269": "祥碩",
+    # ETF
+    "0050": "元大台灣50",  "0056": "元大高股息",
+    "00878": "國泰永續高股息", "00881": "國泰台灣5G+",
+    "00919": "群益台灣精選高息", "00929": "復華台灣科技優息",
+    "006208": "富邦台50",  "00646": "元大S&P500",
+    "00692": "富邦公司治理", "00696B": "富邦美債7-10",
+    "00940": "元大台灣價值高息",
+}
+
 @st.cache_data(ttl=3600)
 def fetch_name_map() -> dict:
     """
@@ -347,6 +377,10 @@ def fetch_name_map() -> dict:
                         result[code] = name
         except Exception:
             pass
+    # 合併內建對照表（內建優先補齊，不覆蓋從網路查到的結果）
+    for k, v in _BUILTIN_NAME_MAP.items():
+        if k not in result:
+            result[k] = v
     return result
 
 
@@ -424,12 +458,18 @@ def verify_stock(stock_id: str):
         if k.upper() == sid_upper:
             return True, v
 
-    # 層 3：yfinance 確認存在（名稱從對照表補）
+    # 層 3：yfinance 確認存在（先查 info 取名稱，再查內建表）
     try:
         ticker = yf.Ticker(f"{stock_id}.TW")
+        info = ticker.info
+        yf_name = info.get("longName") or info.get("shortName") or ""
         df = ticker.history(period="5d")
         if not df.empty:
-            name = name_map.get(stock_id, stock_id)
+            # 優先序：yfinance info > 內建表 > ISIN表 > 代碼本身
+            name = (yf_name
+                    or _BUILTIN_NAME_MAP.get(stock_id)
+                    or name_map.get(stock_id)
+                    or stock_id)
             return True, name
     except Exception:
         pass
@@ -506,13 +546,13 @@ def analyze_signal(df):
 def get_stock_data(twse_data, stock):
     code = stock["id"]
     tw = next((x for x in twse_data if x.get("c") == code), None)
-    # 優先從即時 API 的 "n" 欄位取中文名稱，再從 watchlist，最後查詢備援
+    # 名稱優先序：即時API > watchlist已存 > 內建表 > 代碼本身
     if tw and tw.get("n"):
         name = tw["n"]
     elif stock["name"] != code:
         name = stock["name"]
     else:
-        name = get_stock_name(code)
+        name = _BUILTIN_NAME_MAP.get(code) or get_stock_name(code)
     df = fetch_yf_hist(code)
 
     prev_close = open_price = high = low = yf_close = None
@@ -661,7 +701,7 @@ now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
 # ── 頂部標題 ─────────────────────────────────────────────
 st.markdown(
     '<div class="app-header">'
-    '<div class="app-title">📊 台股<span>看盤</span></div>'
+    '<div class="app-title">📊 大師加持<span>進出場策略v3</span></div>'
     f'<div class="app-time"><span class="live-dot"></span>即時更新<br>{now}</div>'
     '</div>',
     unsafe_allow_html=True,

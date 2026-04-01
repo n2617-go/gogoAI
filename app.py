@@ -6,56 +6,45 @@ from datetime import datetime
 import time
 import json
 
-st.set_page_config(
-    page_title="台股看盤",
-    layout="centered",
-    initial_sidebar_state="collapsed"
-)
-
-# ───────────────── CSS（沿用你的） ─────────────────
-# 👉（這裡完全保留你原本 CSS，不動）
-# 👉 為了篇幅乾淨，我不重貼，你原本那段 그대로保留
+st.set_page_config(page_title="台股看盤", layout="centered")
 
 # =========================================================
-# 🔥 localStorage + SortableJS 橋接（已整合）
+# 🔥 localStorage + 排序橋接
 # =========================================================
-LS_KEY = "twstock_wl_v2"
+LS_KEY = "twstock_wl_v3"
 
 def ls_bridge():
     components.html(f"""
     <script>
     (function(){{
-        var LS_KEY = "{LS_KEY}";
+        const KEY = "{LS_KEY}";
 
-        function inject(val){{
-            var inputs = window.parent.document.querySelectorAll('input[data-testid="stTextInput"]');
-            for (var i = 0; i < inputs.length; i++) {{
-                if (inputs[i].getAttribute('aria-label') === 'ls-bridge') {{
-                    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                    setter.call(inputs[i], val);
-                    inputs[i].dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    break;
+        function sendToStreamlit(val){{
+            const inputs = window.parent.document.querySelectorAll('input[data-testid="stTextInput"]');
+            inputs.forEach(input => {{
+                if (input.getAttribute('aria-label') === 'ls-bridge') {{
+                    const setter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value'
+                    ).set;
+                    setter.call(input, val);
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 }}
-            }}
+            }});
         }}
 
-        // 讀 localStorage
-        try {{
-            var stored = localStorage.getItem(LS_KEY);
-            if (stored) inject(stored);
-        }} catch(e) {{}}
+        // 初次載入
+        const stored = localStorage.getItem(KEY);
+        if (stored) sendToStreamlit(stored);
 
-        // 接收寫入 / 排序
-        window.addEventListener('message', function(e) {{
-
-            if (e.data && e.data.type === 'ls-save') {{
-                localStorage.setItem(LS_KEY, e.data.value);
+        // 接收寫入 & 排序
+        window.addEventListener("message", (e) => {{
+            if (e.data?.type === "ls-save") {{
+                localStorage.setItem(KEY, e.data.value);
             }}
-
-            if (e.data && e.data.type === 'sort-update') {{
-                inject(e.data.value);
+            if (e.data?.type === "sort-update") {{
+                localStorage.setItem(KEY, e.data.value);
+                sendToStreamlit(e.data.value);
             }}
-
         }});
     }})();
     </script>
@@ -63,10 +52,12 @@ def ls_bridge():
 
 
 def ls_save(data):
+    if not data:
+        return
     components.html(f"""
     <script>
     window.parent.postMessage({{
-        type: 'ls-save',
+        type: "ls-save",
         value: {json.dumps(json.dumps(data, ensure_ascii=False))}
     }}, "*");
     </script>
@@ -74,7 +65,7 @@ def ls_save(data):
 
 
 # =========================================================
-# 🔥 拖曳排序 UI
+# 🔥 拖曳排序 UI（修正版）
 # =========================================================
 def sortable_list(items):
     items_json = json.dumps(items, ensure_ascii=False)
@@ -90,7 +81,7 @@ def sortable_list(items):
 
     function render(){{
         el.innerHTML = "";
-        data.forEach((item, i) => {{
+        data.forEach((item) => {{
             const d = document.createElement("div");
             d.style.padding = "10px";
             d.style.marginBottom = "6px";
@@ -98,7 +89,6 @@ def sortable_list(items):
             d.style.borderRadius = "10px";
             d.style.cursor = "grab";
             d.innerText = "☰ " + item.name + " (" + item.id + ")";
-            d.dataset.index = i;
             el.appendChild(d);
         }});
     }}
@@ -109,9 +99,17 @@ def sortable_list(items):
         animation: 150,
         onEnd: function(){{
             const newList = [];
-            el.querySelectorAll("div").forEach(d => {{
-                newList.push(data[d.dataset.index]);
-            }});
+            const nodes = el.children;
+
+            for (let i = 0; i < nodes.length; i++) {{
+                const text = nodes[i].innerText;
+                const match = text.match(/\\((\\d+)\\)/);
+                if (match) {{
+                    const id = match[1];
+                    const found = data.find(x => x.id === id);
+                    if (found) newList.push(found);
+                }}
+            }}
 
             window.parent.postMessage({{
                 type: "sort-update",
@@ -132,22 +130,25 @@ DEFAULT_STOCKS = [
 ]
 
 # =========================================================
-# TWSE / yfinance（簡化版保留）
+# API
 # =========================================================
 def fetch_twse(ids):
     ex = "|".join([f"tse_{i}.tw" for i in ids])
     url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={ex}&json=1"
     try:
-        return requests.get(url).json().get("msgArray", [])
+        return requests.get(url, timeout=10).json().get("msgArray", [])
     except:
         return []
 
 def fetch_price(code, tw):
-    t = next((x for x in tw if x["c"] == code), None)
+    t = next((x for x in tw if x.get("c") == code), None)
     try:
-        return float(t["z"]) if t and t["z"] not in ["-",""] else None
+        z = t.get("z")
+        if z not in ["-", "", None]:
+            return float(z)
     except:
-        return None
+        pass
+    return None
 
 # =========================================================
 # 主程式
@@ -156,25 +157,27 @@ ls_bridge()
 
 ls_raw = st.text_input("ls-bridge", label_visibility="collapsed")
 
-# ✅ 初始化（修正消失問題）
+# ✅ 初始化（修正白畫面）
 if "watchlist" not in st.session_state:
-
-    if not ls_raw:
-        st.stop()
-
-    try:
-        parsed = json.loads(ls_raw)
-        st.session_state.watchlist = parsed if parsed else DEFAULT_STOCKS.copy()
-    except:
+    if ls_raw:
+        try:
+            parsed = json.loads(ls_raw)
+            if isinstance(parsed, list) and len(parsed) > 0:
+                st.session_state.watchlist = parsed
+            else:
+                st.session_state.watchlist = DEFAULT_STOCKS.copy()
+        except:
+            st.session_state.watchlist = DEFAULT_STOCKS.copy()
+    else:
         st.session_state.watchlist = DEFAULT_STOCKS.copy()
 
-# ✅ 接收排序更新
+# ✅ 接收排序 / localStorage 更新
 if ls_raw:
     try:
         parsed = json.loads(ls_raw)
         if isinstance(parsed, list):
             st.session_state.watchlist = parsed
-            if parsed:
+            if len(parsed) > 0:
                 ls_save(parsed)
     except:
         pass
@@ -182,9 +185,9 @@ if ls_raw:
 # =========================================================
 # UI
 # =========================================================
-st.title("📊 大師加持開發版v3")
+st.title("📊 台股看盤")
 
-# ➕ 新增股票
+# ➕ 新增
 new = st.text_input("輸入股票代碼")
 if st.button("加入"):
     if new and not any(s["id"] == new for s in st.session_state.watchlist):
@@ -192,11 +195,11 @@ if st.button("加入"):
         ls_save(st.session_state.watchlist)
         st.rerun()
 
-# 🔀 拖曳排序
+# 🔀 排序
 st.subheader("🔀 拖曳排序")
 sortable_list(st.session_state.watchlist)
 
-# 📊 顯示股票
+# 📊 顯示
 ids = [s["id"] for s in st.session_state.watchlist]
 tw = fetch_twse(ids)
 
@@ -204,8 +207,8 @@ for s in st.session_state.watchlist:
     price = fetch_price(s["id"], tw)
     st.write(f"{s['name']} ({s['id']})：{price}")
 
-# ⏱ 更新時間
-st.caption(datetime.now().strftime("%H:%M:%S"))
+# ⏱ 時間
+st.caption(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 time.sleep(15)
 st.rerun()

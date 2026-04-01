@@ -8,7 +8,7 @@ import json
 import urllib.parse
 
 st.set_page_config(
-    page_title="台股看盤",
+    page_title="大師加持",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
@@ -585,7 +585,7 @@ now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
 # ── 頂部標題 ─────────────────────────────────────────────
 st.markdown(
     '<div class="app-header">'
-    '<div class="app-title">📊 台股<span>看盤</span></div>'
+    '<div class="app-title">📊 大師加持<span>進出場策略v3版</span></div>'
     f'<div class="app-time"><span class="live-dot"></span>即時更新<br>{now}</div>'
     '</div>',
     unsafe_allow_html=True,

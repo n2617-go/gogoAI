@@ -8,7 +8,7 @@ import json
 import urllib.parse
 
 st.set_page_config(
-    page_title="大師加持",
+    page_title="台股看盤",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
@@ -309,43 +309,101 @@ def inject_localstorage_helper():
 # ══════════════════════════════════════════════════════════
 # 股票名稱查詢
 # ══════════════════════════════════════════════════════════
+import re as _re
+
 @st.cache_data(ttl=3600)
 def fetch_name_map() -> dict:
-    """從 TWSE ISIN 頁面取得完整代碼→中文名稱對照表"""
-    import re
+    """
+    從 TWSE / OTC ISIN 頁面抓完整代碼→中文名稱對照表。
+    涵蓋上市(mode=2)、上櫃(mode=4)、全數字與含字母代碼（如 00981A）。
+    """
     result = {}
     headers = {"User-Agent": "Mozilla/5.0"}
-    for mode in ["2", "4"]:   # 2=上市, 4=上櫃
+    for mode in ["2", "4"]:
         try:
             r = requests.get(
                 f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}",
-                headers=headers, timeout=10
+                headers=headers, timeout=12
             )
             r.encoding = "big5"
-            rows = re.findall(r'<tr[^>]*>(.*?)</tr>', r.text, re.S)
+            # 逐列解析：每個 <td> 的第一格格式為「代碼　名稱」（全形空格分隔）
+            rows = _re.findall(r'<tr[^>]*>(.*?)</tr>', r.text, _re.S)
             for row in rows:
-                tds = re.findall(r'<td[^>]*>(.*?)</td>', row, re.S)
+                tds = _re.findall(r'<td[^>]*>(.*?)</td>', row, _re.S)
                 if not tds:
                     continue
-                first = re.sub(r'<[^>]+>', '', tds[0]).strip()
-                if '\u3000' in first:
-                    parts = first.split('\u3000')
+                # 去除 HTML 標籤
+                cell = _re.sub(r'<[^>]+>', '', tds[0]).strip()
+                # 支援全形空格 \u3000 與一般空白兩種分隔
+                if '\u3000' in cell:
+                    parts = cell.split('\u3000', 1)
+                else:
+                    parts = cell.split(None, 1)   # 以任意空白切一次
+                if len(parts) == 2:
                     code = parts[0].strip()
-                    name = parts[1].strip() if len(parts) > 1 else ""
-                    if code and name:
+                    name = parts[1].strip()
+                    # 代碼：4~7 碼，可包含英文字母（如 00631L、00981A）
+                    if code and name and _re.match(r'^[0-9A-Za-z]{4,7}$', code):
                         result[code] = name
         except Exception:
             pass
     return result
 
 
-def verify_stock(stock_id: str):
+@st.cache_data(ttl=300)
+def fetch_name_from_twse_api(stock_id: str) -> str:
     """
-    驗證台股代碼，回傳 (有效: bool, 中文名稱: str)
-    查詢順序：TWSE 即時 → OTC 即時 → ISIN 名稱表 → yfinance
+    用 TWSE 即時 API 查單支股票名稱（上市 + 上櫃）。
+    非交易時間仍可查到靜態名稱欄位 'n'。
+    快取 5 分鐘。
     """
     headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://mis.twse.com.tw/"}
+    for market in ["tse", "otc"]:
+        try:
+            url = (
+                "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
+                f"?ex_ch={market}_{stock_id}.tw&json=1"
+            )
+            r = requests.get(url, headers=headers, timeout=8)
+            arr = r.json().get("msgArray", [])
+            if arr and arr[0].get("n"):
+                return arr[0]["n"]
+        except Exception:
+            pass
+    return ""
 
+
+def get_stock_name(stock_id: str) -> str:
+    """
+    取得中文名稱，三層備援：
+    1. TWSE/OTC 即時 API（最快，非交易時間也有靜態欄位）
+    2. ISIN 名稱對照表（最全，含所有 ETF 含字母代碼）
+    3. 代碼本身（最後備援）
+    """
+    # 層 1：即時 API
+    name = fetch_name_from_twse_api(stock_id)
+    if name:
+        return name
+    # 層 2：ISIN 對照表
+    name_map = fetch_name_map()
+    if stock_id in name_map:
+        return name_map[stock_id]
+    # 層 2b：大小寫不敏感比對（部分 ETF 代碼大小寫不一致）
+    sid_upper = stock_id.upper()
+    for k, v in name_map.items():
+        if k.upper() == sid_upper:
+            return v
+    return stock_id   # 最後備援
+
+
+def verify_stock(stock_id: str):
+    """
+    驗證台股代碼，回傳 (有效: bool, 中文名稱: str)。
+    策略：先用即時 API 驗存在性；若非交易時間則改查 ISIN 表；
+    最後用 yfinance 確認歷史資料存在。
+    """
+    # 層 1：TWSE/OTC 即時 API
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://mis.twse.com.tw/"}
     for market in ["tse", "otc"]:
         try:
             url = (
@@ -359,10 +417,14 @@ def verify_stock(stock_id: str):
         except Exception:
             pass
 
+    # 層 2：ISIN 對照表（含字母代碼、非交易時間皆可查）
     name_map = fetch_name_map()
-    if stock_id in name_map:
-        return True, name_map[stock_id]
+    sid_upper = stock_id.upper()
+    for k, v in name_map.items():
+        if k.upper() == sid_upper:
+            return True, v
 
+    # 層 3：yfinance 確認存在（名稱從對照表補）
     try:
         ticker = yf.Ticker(f"{stock_id}.TW")
         df = ticker.history(period="5d")
@@ -571,7 +633,14 @@ def render_card(row, idx):
 #    （query_params 在 Streamlit 啟動時就已解析完畢，不存在時序問題）
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = load_watchlist()
-    # 首次建立時確保 query_params 也有值
+    # 自動修補：若某支股票的 name 就是 id（代表之前沒查到中文名稱），補回正確名稱
+    needs_save = False
+    for s in st.session_state.watchlist:
+        if s["name"] == s["id"]:
+            recovered = get_stock_name(s["id"])
+            if recovered != s["id"]:
+                s["name"] = recovered
+                needs_save = True
     save_watchlist(st.session_state.watchlist)
 
 # ② 注入 localStorage 輔助（把目前網址同步存/還原，為雙重保險）
@@ -585,7 +654,7 @@ now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
 # ── 頂部標題 ─────────────────────────────────────────────
 st.markdown(
     '<div class="app-header">'
-    '<div class="app-title">📊 大師加持<span>進出場策略v3版</span></div>'
+    '<div class="app-title">📊 台股<span>看盤</span></div>'
     f'<div class="app-time"><span class="live-dot"></span>即時更新<br>{now}</div>'
     '</div>',
     unsafe_allow_html=True,

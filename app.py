@@ -134,8 +134,8 @@ html, body, [data-testid="stAppViewContainer"] {
     background: var(--accent, #38bdf8);
     border-radius: 16px 16px 0 0;
 }
-.stock-card.up   { --accent: #22c55e; }
-.stock-card.down { --accent: #ef4444; }
+.stock-card.up   { --accent: #ef4444; }
+.stock-card.down { --accent: #22c55e; }
 .stock-card.flat { --accent: #94a3b8; }
 
 .card-top {
@@ -153,8 +153,8 @@ html, body, [data-testid="stAppViewContainer"] {
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.78rem; font-weight: 700; margin-top: 3px;
 }
-.up-color   { color: #22c55e; }
-.down-color { color: #ef4444; }
+.up-color   { color: #ef4444; }
+.down-color { color: #22c55e; }
 .flat-color { color: #94a3b8; }
 
 .ohlc-row {
@@ -504,8 +504,15 @@ def analyze_signal(df):
 
 
 def get_stock_data(twse_data, stock):
-    code, name = stock["id"], stock["name"]
+    code = stock["id"]
     tw = next((x for x in twse_data if x.get("c") == code), None)
+    # 優先從即時 API 的 "n" 欄位取中文名稱，再從 watchlist，最後查詢備援
+    if tw and tw.get("n"):
+        name = tw["n"]
+    elif stock["name"] != code:
+        name = stock["name"]
+    else:
+        name = get_stock_name(code)
     df = fetch_yf_hist(code)
 
     prev_close = open_price = high = low = yf_close = None
@@ -654,7 +661,7 @@ now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
 # ── 頂部標題 ─────────────────────────────────────────────
 st.markdown(
     '<div class="app-header">'
-    '<div class="app-title">📊 大師加持<span>進出場策略v3版</span></div>'
+    '<div class="app-title">📊 台股<span>看盤</span></div>'
     f'<div class="app-time"><span class="live-dot"></span>即時更新<br>{now}</div>'
     '</div>',
     unsafe_allow_html=True,

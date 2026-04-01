@@ -415,7 +415,7 @@ now  = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
 # ── 頂部標題 ──────────────────────────────────────────────
 st.markdown(f"""
 <div class="app-header">
-  <div class="app-title">📊 台股<span>看盤</span></div>
+  <div class="app-title">📊 大師加持<span>開發版v2</span></div>
   <div class="app-time">
     <span class="live-dot"></span>即時更新<br>{now}
   </div>

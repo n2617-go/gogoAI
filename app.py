@@ -1,75 +1,127 @@
 import streamlit as st
 import requests
-import time
+import yfinance as yf
+import pandas as pd
 from datetime import datetime
 
-st.set_page_config(page_title="即時台股股價", layout="wide")
-st.title("📈 即時台股股價")
-st.caption("資料來源：TWSE 官方 API（5秒更新） • 台積電、中鋼、台化、台塑化")
+st.set_page_config(page_title="台股看盤", layout="wide")
 
-stocks = [
-    {"id": "2330", "name": "台積電"},
-    {"id": "2002", "name": "中鋼"},
-    {"id": "1326", "name": "台化"},
-    {"id": "6505", "name": "台塑化"}
-]
+st.title("📈 台股看盤")
 
-def fetch_data():
-    ex_ch = "|".join([f"tse_{s['id']}.tw" for s in stocks])
+# ========================
+# ⭐ 自選股初始化（關鍵）
+# ========================
+if "watchlist" not in st.session_state:
+    st.session_state.watchlist = ["2330", "2002"]
+
+# ========================
+# ⭐ Sidebar（穩定版）
+# ========================
+st.sidebar.header("⭐ 自選股")
+
+# ➕ 新增股票
+new_stock = st.sidebar.text_input("輸入股票代碼（例如 2330）")
+
+if st.sidebar.button("新增股票"):
+    if new_stock.isdigit():
+        if new_stock not in st.session_state.watchlist:
+            st.session_state.watchlist.append(new_stock)
+    else:
+        st.sidebar.warning("請輸入正確股票代碼")
+
+# ❌ 刪除股票
+if st.session_state.watchlist:
+    remove_stock = st.sidebar.selectbox("選擇刪除股票", st.session_state.watchlist)
+
+    if st.sidebar.button("刪除股票"):
+        st.session_state.watchlist.remove(remove_stock)
+
+# ========================
+# TWSE
+# ========================
+def fetch_twse(stock_ids):
+    ex_ch = "|".join([f"tse_{s}.tw" for s in stock_ids])
     url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={ex_ch}&json=1"
-    
+
     try:
-        resp = requests.get(url, timeout=10)
-        data = resp.json()
-        return data.get("msgArray", [])
+        r = requests.get(url, timeout=10)
+        return r.json().get("msgArray", [])
+    except:
+        return []
+
+# ========================
+# yfinance（加強穩定）
+# ========================
+@st.cache_data(ttl=60)
+def fetch_yf(stock_id):
+    try:
+        df = yf.Ticker(f"{stock_id}.TW").history(period="3mo")
+        return df if not df.empty else None
     except:
         return None
 
-if "last_data" not in st.session_state:
-    st.session_state.last_data = None
+# ========================
+# 技術指標
+# ========================
+def add_indicators(df):
+    df['MA5'] = df['Close'].rolling(5).mean()
+    df['MA20'] = df['Close'].rolling(20).mean()
 
-col1, col2 = st.columns([3, 1])
-with col2:
-    if st.button("🔄 手動刷新", use_container_width=True):
-        st.rerun()
+    delta = df['Close'].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-data = fetch_data()
-if data:
-    st.session_state.last_data = data
+    rs = gain.rolling(14).mean() / loss.rolling(14).mean()
+    df['RSI'] = 100 - (100 / (1 + rs))
 
-if st.session_state.last_data:
-    rows = []
-    for stock in st.session_state.last_data:
-        code = stock["c"]
-        name = stock["n"]
-        price = float(stock.get("z") or 0)
-        prev = float(stock.get("y") or 0)
-        volume = int(stock.get("v") or 0)
-        
-        is_closed = stock.get("z") in [None, "-", ""]
-        if is_closed or price == 0:
-            price = prev
-        
-        change = price - prev
-        change_pct = (change / prev * 100) if prev else 0
-        
-        rows.append({
-            "股票名稱": name,
-            "代碼": code,
-            "最新價": f"{price:.2f} {'(收盤)' if is_closed else ''}",
-            "昨收": f"{prev:.2f}",
-            "漲跌": f"{'▲' if change > 0 else '▼'} {change:.2f}",
-            "漲跌幅": f"{change_pct:+.2f}%",
-            "累計成交量": f"{volume:,}"
-        })
-    
-    st.dataframe(rows, use_container_width=True, hide_index=True)
-    
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    st.caption(f"最後更新：{now}（每15秒自動更新）")
-else:
-    st.error("暫時無法取得資料，請稍後再試")
+    return df
 
-# 自動刷新
-time.sleep(15)
-st.rerun()
+# ========================
+# 主流程
+# ========================
+twse_data = fetch_twse(st.session_state.watchlist)
+
+st.subheader("📊 即時看盤")
+
+for code in st.session_state.watchlist:
+
+    df = fetch_yf(code)
+
+    if df is None:
+        st.error(f"{code} 讀取失敗")
+        continue
+
+    df = add_indicators(df)
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    price = latest["Close"]
+    change = price - prev["Close"]
+
+    color = "red" if change > 0 else "green"
+
+    st.markdown(f"""
+    <div style="
+        padding:15px;
+        border-radius:12px;
+        background:#111;
+        margin-bottom:10px;
+    ">
+        <h3>{code}</h3>
+        <h2 style="color:{'red' if change>0 else 'green'}">
+            {price:.2f}
+        </h2>
+
+        📊 成交量：{int(latest['Volume']):,}<br>
+        MA5：{latest['MA5']:.2f} ｜ MA20：{latest['MA20']:.2f}<br>
+        RSI：{latest['RSI']:.2f}
+    </div>
+    """, unsafe_allow_html=True)
+
+# ========================
+# 更新時間 + 自動刷新（正確寫法）
+# ========================
+st.caption(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+st.autorefresh(interval=15000, key="refresh")

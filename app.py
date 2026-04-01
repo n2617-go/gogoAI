@@ -325,7 +325,7 @@ _BUILTIN_NAME_MAP = {
     "2408": "南亞科","2337": "旺宏",  "3034": "聯詠",  "3008": "大立光",
     "2353": "宏碁",  "2356": "英業達","2376": "技嘉",  "2385": "群光",
     "2392": "正崴",  "2404": "漢唐",  "2441": "超豐",  "2449": "京元電子",
-    "2迷603": "櫻花", "1216": "統一",  "1101": "台泥",  "1102": "亞泥",
+    "2605": "新興",  "1216": "統一",  "1101": "台泥",  "1102": "亞泥",
     "1402": "遠紡",  "2609": "陽明",  "2615": "萬海",  "2603": "長榮",
     "2610": "華航",  "2618": "長榮航","2912": "統一超","2801": "彰銀",
     "1590": "亞德客","6669": "緯穎",  "6770": "力積電","4938": "和碩",
@@ -459,20 +459,25 @@ def verify_stock(stock_id: str):
             return True, v
 
     # 層 3：yfinance 確認存在（先查 info 取名稱，再查內建表）
-    try:
-        ticker = yf.Ticker(f"{stock_id}.TW")
-        info = ticker.info
-        yf_name = info.get("longName") or info.get("shortName") or ""
-        df = ticker.history(period="5d")
-        if not df.empty:
-            # 優先序：yfinance info > 內建表 > ISIN表 > 代碼本身
-            name = (yf_name
-                    or _BUILTIN_NAME_MAP.get(stock_id)
-                    or name_map.get(stock_id)
-                    or stock_id)
-            return True, name
-    except Exception:
-        pass
+    for suffix in [".TW", ".TWO"]:
+        try:
+            ticker = yf.Ticker(f"{stock_id}{suffix}")
+            df = ticker.history(period="5d")
+            if not df.empty:
+                info = {}
+                try:
+                    info = ticker.info or {}
+                except Exception:
+                    pass
+                yf_name = info.get("longName") or info.get("shortName") or ""
+                # 優先序：yfinance info > 內建表 > ISIN表 > 代碼本身
+                name = (yf_name
+                        or _BUILTIN_NAME_MAP.get(stock_id)
+                        or name_map.get(stock_id)
+                        or stock_id)
+                return True, name
+        except Exception:
+            pass
 
     return False, ""
 
@@ -701,7 +706,7 @@ now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
 # ── 頂部標題 ─────────────────────────────────────────────
 st.markdown(
     '<div class="app-header">'
-    '<div class="app-title">📊 大師加持<span>進出場策略v3</span></div>'
+    '<div class="app-title">📊 大師加持<span>進出場策略v3版</span></div>'
     f'<div class="app-time"><span class="live-dot"></span>即時更新<br>{now}</div>'
     '</div>',
     unsafe_allow_html=True,

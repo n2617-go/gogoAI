@@ -223,7 +223,7 @@ html, body, [data-testid="stAppViewContainer"] {
 st.markdown(CSS, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════
-# localStorage 橋接（你原本的程式碼，完全保留）
+# localStorage 橋接
 # ══════════════════════════════════════════════════════════
 LS_KEY = "twstock_wl_v2"
 
@@ -233,7 +233,6 @@ def ls_bridge():
         <script>
         (function(){
             var LS_KEY = '""" + LS_KEY + """';
-
             function injectToStreamlit(val) {
                 var inputs = window.parent.document.querySelectorAll('input[data-testid="stTextInput"]');
                 for (var i = 0; i < inputs.length; i++) {
@@ -245,12 +244,10 @@ def ls_bridge():
                     }
                 }
             }
-
             try {
                 var stored = localStorage.getItem(LS_KEY);
                 if (stored) { injectToStreamlit(stored); }
             } catch(e) {}
-
             window.addEventListener('message', function(e) {
                 if (e.data && e.data.type === 'ls-save') {
                     try { localStorage.setItem(LS_KEY, e.data.value); } catch(err) {}
@@ -278,7 +275,7 @@ def ls_save(data_list):
     )
 
 # ══════════════════════════════════════════════════════════
-# 預設股票 + 其他函式（你原本的程式碼，完全保留）
+# 預設股票
 # ══════════════════════════════════════════════════════════
 DEFAULT_STOCKS = [
     {"id": "2330", "name": "台積電"},
@@ -287,14 +284,220 @@ DEFAULT_STOCKS = [
     {"id": "6505", "name": "台塑化"},
 ]
 
-# （以下所有函式 fetch_twse_name_list、get_chinese_name、verify_stock、fetch_twse_realtime、
-#  fetch_yf_hist、get_realtime_price、calculate_kd、calculate_momentum、analyze_signal、
-#  get_stock_data、fmt、direction_class、signal_badge_class、trend_badge_class、kd_bar_html
-#  都保持你原本的程式碼不變，這裡省略以節省篇幅）
+# ══════════════════════════════════════════════════════════
+# 以下為你原本的所有函式（已完整保留）
+# ══════════════════════════════════════════════════════════
+@st.cache_data(ttl=3600)
+def fetch_twse_name_list():
+    url = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.encoding = "big5"
+        import re
+        result = {}
+        rows = re.findall(r'<tr[^>]*>(.*?)</tr>', r.text, re.S)
+        for row in rows:
+            tds = re.findall(r'<td[^>]*>(.*?)</td>', row, re.S)
+            if not tds:
+                continue
+            first = re.sub(r'<[^>]+>', '', tds[0]).strip()
+            if '\u3000' in first:
+                parts = first.split('\u3000')
+                code = parts[0].strip()
+                name = parts[1].strip() if len(parts) > 1 else ""
+                if code and name and len(code) >= 4:
+                    result[code] = name
+        return result
+    except Exception:
+        return {}
 
-# ... [你原本所有的 @st.cache_data 函式和 def 函式都貼在這裡] ...
+def get_chinese_name(stock_id):
+    name_map = fetch_twse_name_list()
+    if stock_id in name_map:
+        return name_map[stock_id]
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://mis.twse.com.tw/"}
+    try:
+        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw&json=1"
+        r = requests.get(url, headers=headers, timeout=6)
+        arr = r.json().get("msgArray", [])
+        if arr and arr[0].get("n"):
+            return arr[0]["n"]
+    except Exception:
+        pass
+    try:
+        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=otc_{stock_id}.tw&json=1"
+        r = requests.get(url, headers=headers, timeout=6)
+        arr = r.json().get("msgArray", [])
+        if arr and arr[0].get("n"):
+            return arr[0]["n"]
+    except Exception:
+        pass
+    return stock_id
 
-# ── 補齊 render_card 函式（原本被截斷的部分） ─────────────────────────────
+def verify_stock(stock_id):
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://mis.twse.com.tw/"}
+    try:
+        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw&json=1"
+        r = requests.get(url, headers=headers, timeout=8)
+        arr = r.json().get("msgArray", [])
+        if arr and arr[0].get("n"):
+            return True, arr[0]["n"]
+    except Exception:
+        pass
+    try:
+        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=otc_{stock_id}.tw&json=1"
+        r = requests.get(url, headers=headers, timeout=8)
+        arr = r.json().get("msgArray", [])
+        if arr and arr[0].get("n"):
+            return True, arr[0]["n"]
+    except Exception:
+        pass
+    name_map = fetch_twse_name_list()
+    if stock_id in name_map:
+        return True, name_map[stock_id]
+    try:
+        ticker = yf.Ticker(f"{stock_id}.TW")
+        df = ticker.history(period="5d")
+        if not df.empty:
+            name = name_map.get(stock_id, stock_id)
+            return True, name
+    except Exception:
+        pass
+    return False, ""
+
+def fetch_twse_realtime(stock_ids):
+    parts = [f"tse_{sid}.tw" for sid in stock_ids]
+    otc_parts = [f"otc_{sid}.tw" for sid in stock_ids]
+    ex_ch = "|".join(parts + otc_parts)
+    url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={ex_ch}&json=1"
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://mis.twse.com.tw/"}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        return r.json().get("msgArray", [])
+    except Exception:
+        return []
+
+def fetch_yf_hist(stock_id):
+    try:
+        ticker = yf.Ticker(f"{stock_id}.TW")
+        df = ticker.history(period="3mo")
+        return None if df.empty else df
+    except Exception:
+        return None
+
+def get_realtime_price(tw, yf_close):
+    try:
+        z = tw.get("z")
+        if z not in ["-", "", None, "0"]:
+            return float(z)
+        b = tw.get("b")
+        if b:
+            return float(b.split("_")[0])
+        a = tw.get("a")
+        if a:
+            return float(a.split("_")[0])
+    except Exception:
+        pass
+    return yf_close
+
+def calculate_kd(df, period=9):
+    low_min = df["Low"].rolling(window=period).min()
+    high_max = df["High"].rolling(window=period).max()
+    rsv = (df["Close"] - low_min) / (high_max - low_min) * 100
+    df["K"] = rsv.ewm(com=2).mean()
+    df["D"] = df["K"].ewm(com=2).mean()
+    return df
+
+def calculate_momentum(df, period=10):
+    df["Momentum"] = df["Close"] - df["Close"].shift(period)
+    return df
+
+def analyze_signal(df):
+    if len(df) < 2:
+        return "觀望", "無法判斷"
+    latest, prev = df.iloc[-1], df.iloc[-2]
+    signal = "觀望"
+    if prev["K"] < prev["D"] and latest["K"] > latest["D"]:
+        signal = "買進 (黃金交叉)"
+    elif prev["K"] > prev["D"] and latest["K"] < latest["D"]:
+        signal = "賣出 (死亡交叉)"
+    trend = "上升動能" if latest["Momentum"] > 0 else "下跌動能"
+    return signal, trend
+
+def get_stock_data(twse_data, stock):
+    code, name = stock["id"], stock["name"]
+    tw = next((x for x in twse_data if x.get("c") == code), None)
+    df = fetch_yf_hist(code)
+
+    if df is not None and len(df) >= 2:
+        prev_close = float(df["Close"].iloc[-2])
+        open_price = float(df["Open"].iloc[-1])
+        high = float(df["High"].iloc[-1])
+        low = float(df["Low"].iloc[-1])
+        yf_close = float(df["Close"].iloc[-1])
+    else:
+        prev_close = open_price = high = low = yf_close = None
+
+    price = get_realtime_price(tw, yf_close) if tw else yf_close
+
+    if prev_close is None and tw:
+        try:
+            prev_close = float(tw.get("y") or 0)
+        except Exception:
+            prev_close = None
+
+    if df is not None:
+        df = calculate_kd(df)
+        df = calculate_momentum(df)
+        signal, trend = analyze_signal(df)
+        latest = df.iloc[-1]
+        k = float(latest["K"])
+        d = float(latest["D"])
+        momentum = float(latest["Momentum"])
+    else:
+        signal = trend = "無資料"
+        k = d = momentum = None
+
+    change = (price - prev_close) if (prev_close and price) else 0.0
+    change_pct = (change / prev_close * 100) if prev_close else 0.0
+
+    return {
+        "name": name, "code": code,
+        "price": price, "prev_close": prev_close,
+        "open": open_price, "high": high, "low": low,
+        "change": change, "change_pct": change_pct,
+        "K": k, "D": d, "Momentum": momentum,
+        "signal": signal, "trend": trend,
+    }
+
+def fmt(v, d=2):
+    return f"{v:.{d}f}" if v is not None else "－"
+
+def direction_class(change):
+    if change > 0:  return "up",   "up-color",   "▲"
+    if change < 0:  return "down", "down-color",  "▼"
+    return "flat", "flat-color", "－"
+
+def signal_badge_class(sig):
+    if "買進" in sig: return "badge-signal-buy"
+    if "賣出" in sig: return "badge-signal-sell"
+    return "badge-signal-watch"
+
+def trend_badge_class(trend):
+    return "badge-trend-up" if "上升" in trend else "badge-trend-down"
+
+def kd_bar_html(val, color):
+    pct = min(max(val, 0), 100) if val is not None else 50
+    return (
+        '<div class="kd-bar-wrap">'
+        f'<div class="kd-bar-fill" style="--bar-width:{pct:.0f}%; --bar-color:{color};">'
+        '</div></div>'
+    )
+
+# ══════════════════════════════════════════════════════════
+# 渲染卡片（已補完整）
+# ══════════════════════════════════════════════════════════
 def render_card(row):
     card_cls, price_cls, arrow = direction_class(row["change"])
 
@@ -371,7 +574,7 @@ def render_card(row):
 # ===================== 主程式 =====================
 ls_bridge()
 
-# 隱藏的 localStorage 橋接 input（關鍵！讓 JS 把資料塞進來）
+# 隱藏的 localStorage 橋接 input
 ls_data = st.text_input(
     "ls-bridge",
     value="",
@@ -379,7 +582,7 @@ ls_data = st.text_input(
     key="ls-bridge-input"
 )
 
-# 載入自選股（優先 localStorage，沒有的話用預設）
+# 載入自選股
 watchlist = DEFAULT_STOCKS[:]
 if ls_data:
     try:
@@ -389,7 +592,7 @@ if ls_data:
     except:
         pass
 
-# 一次抓全部股票的即時資料
+# 抓即時資料
 stock_ids = [s["id"] for s in watchlist]
 twse_data = fetch_twse_realtime(stock_ids)
 
@@ -431,7 +634,7 @@ st.markdown(f'<div class="add-section-title">我的自選股（{len(watchlist)} 
 if not watchlist:
     st.markdown('<div class="no-data">目前沒有自選股</div>', unsafe_allow_html=True)
 
-for stock in watchlist[:]:   # copy 避免迴圈中修改
+for stock in watchlist[:]:
     row = get_stock_data(twse_data, stock)
 
     col_card, col_del = st.columns([9, 1])
@@ -443,5 +646,4 @@ for stock in watchlist[:]:   # copy 避免迴圈中修改
             ls_save(watchlist)
             st.rerun()
 
-# 頁尾
 st.markdown('<div class="footer-note">資料來源：TWSE + Yahoo Finance<br>技術指標僅供參考，非投資建議</div>', unsafe_allow_html=True)

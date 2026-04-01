@@ -11,7 +11,7 @@ st.set_page_config(page_title="台股看盤", layout="centered")
 # =========================================================
 # 🔥 localStorage + 排序橋接
 # =========================================================
-LS_KEY = "twstock_wl_v3"
+LS_KEY = "twstock_wl_v4"
 
 def ls_bridge():
     components.html(f"""
@@ -19,7 +19,7 @@ def ls_bridge():
     (function(){{
         const KEY = "{LS_KEY}";
 
-        function sendToStreamlit(val){{
+        function send(val){{
             const inputs = window.parent.document.querySelectorAll('input[data-testid="stTextInput"]');
             inputs.forEach(input => {{
                 if (input.getAttribute('aria-label') === 'ls-bridge') {{
@@ -32,18 +32,16 @@ def ls_bridge():
             }});
         }}
 
-        // 初次載入
         const stored = localStorage.getItem(KEY);
-        if (stored) sendToStreamlit(stored);
+        if (stored) send(stored);
 
-        // 接收寫入 & 排序
         window.addEventListener("message", (e) => {{
             if (e.data?.type === "ls-save") {{
                 localStorage.setItem(KEY, e.data.value);
             }}
             if (e.data?.type === "sort-update") {{
                 localStorage.setItem(KEY, e.data.value);
-                sendToStreamlit(e.data.value);
+                send(e.data.value);
             }}
         }});
     }})();
@@ -63,16 +61,14 @@ def ls_save(data):
     </script>
     """, height=0)
 
-
 # =========================================================
-# 🔥 拖曳排序 UI（修正版）
+# 🔥 拖曳排序
 # =========================================================
 def sortable_list(items):
     items_json = json.dumps(items, ensure_ascii=False)
 
     components.html(f"""
     <div id="list"></div>
-
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
 
     <script>
@@ -81,7 +77,7 @@ def sortable_list(items):
 
     function render(){{
         el.innerHTML = "";
-        data.forEach((item) => {{
+        data.forEach(item => {{
             const d = document.createElement("div");
             d.style.padding = "10px";
             d.style.marginBottom = "6px";
@@ -120,9 +116,8 @@ def sortable_list(items):
     </script>
     """, height=220)
 
-
 # =========================================================
-# 預設股票
+# 預設
 # =========================================================
 DEFAULT_STOCKS = [
     {"id": "2330", "name": "台積電"},
@@ -140,14 +135,41 @@ def fetch_twse(ids):
     except:
         return []
 
+# ⭐⭐⭐ 關鍵修正：價格抓取完整邏輯 ⭐⭐⭐
 def fetch_price(code, tw):
     t = next((x for x in tw if x.get("c") == code), None)
+
+    if not t:
+        return None
+
     try:
+        # 成交價
         z = t.get("z")
-        if z not in ["-", "", None]:
+        if z not in ["-", "", None, "0"]:
             return float(z)
+
+        # 買價
+        b = t.get("b")
+        if b:
+            return float(b.split("_")[0])
+
+        # 賣價
+        a = t.get("a")
+        if a:
+            return float(a.split("_")[0])
+
     except:
         pass
+
+    # fallback → yfinance
+    try:
+        ticker = yf.Ticker(f"{code}.TW")
+        df = ticker.history(period="1d")
+        if not df.empty:
+            return float(df["Close"].iloc[-1])
+    except:
+        pass
+
     return None
 
 # =========================================================
@@ -157,7 +179,7 @@ ls_bridge()
 
 ls_raw = st.text_input("ls-bridge", label_visibility="collapsed")
 
-# ✅ 初始化（修正白畫面）
+# 初始化
 if "watchlist" not in st.session_state:
     if ls_raw:
         try:
@@ -171,7 +193,7 @@ if "watchlist" not in st.session_state:
     else:
         st.session_state.watchlist = DEFAULT_STOCKS.copy()
 
-# ✅ 接收排序 / localStorage 更新
+# 同步 localStorage
 if ls_raw:
     try:
         parsed = json.loads(ls_raw)
@@ -187,7 +209,7 @@ if ls_raw:
 # =========================================================
 st.title("📊 台股看盤")
 
-# ➕ 新增
+# 新增股票
 new = st.text_input("輸入股票代碼")
 if st.button("加入"):
     if new and not any(s["id"] == new for s in st.session_state.watchlist):
@@ -195,19 +217,20 @@ if st.button("加入"):
         ls_save(st.session_state.watchlist)
         st.rerun()
 
-# 🔀 排序
+# 拖曳排序
 st.subheader("🔀 拖曳排序")
 sortable_list(st.session_state.watchlist)
 
-# 📊 顯示
+# 顯示價格
 ids = [s["id"] for s in st.session_state.watchlist]
 tw = fetch_twse(ids)
 
 for s in st.session_state.watchlist:
     price = fetch_price(s["id"], tw)
-    st.write(f"{s['name']} ({s['id']})：{price}")
+    price_str = f"{price:.2f}" if price is not None else "—"
+    st.write(f"{s['name']} ({s['id']})：{price_str}")
 
-# ⏱ 時間
+# 時間
 st.caption(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 time.sleep(15)

@@ -1,16 +1,15 @@
 import streamlit as st
 import streamlit.components.v1 as components
-import requests
 import yfinance as yf
 import json
 
 st.set_page_config(page_title="台股看盤", layout="centered")
 
-# =========================
-# localStorage 設定
-# =========================
-LS_KEY = "twstock_wl_v3"
+LS_KEY = "twstock_wl_v4"
 
+# =========================
+# localStorage Bridge
+# =========================
 def ls_bridge():
     components.html(f"""
     <script>
@@ -20,18 +19,22 @@ def ls_bridge():
         function sendToStreamlit(val){{
             const input = window.parent.document.querySelector('input[aria-label="ls-bridge"]');
             if(!input) return;
+
             const setter = Object.getOwnPropertyDescriptor(
                 window.HTMLInputElement.prototype, 'value'
             ).set;
+
             setter.call(input, val);
             input.dispatchEvent(new Event('input', {{ bubbles: true }}));
         }}
 
-        // 讀取 localStorage
-        try {{
-            const data = localStorage.getItem(LS_KEY);
-            if(data) sendToStreamlit(data);
-        }} catch(e) {{}}
+        // 等 DOM 穩定後再執行（關鍵）
+        setTimeout(() => {{
+            try {{
+                const data = localStorage.getItem(LS_KEY);
+                if(data) sendToStreamlit(data);
+            }} catch(e) {{}}
+        }}, 300);
 
         // 接收寫入
         window.addEventListener("message", (e) => {{
@@ -55,7 +58,7 @@ def ls_save(data):
     """, height=0)
 
 # =========================
-# 初始化
+# 啟動 bridge
 # =========================
 ls_bridge()
 
@@ -66,14 +69,22 @@ DEFAULT_STOCKS = [
     {"id": "2002", "name": "中鋼"},
 ]
 
-if "watchlist" not in st.session_state:
-    if ls_data:
-        try:
-            st.session_state.watchlist = json.loads(ls_data)
-        except:
-            st.session_state.watchlist = DEFAULT_STOCKS
-    else:
+# =========================
+# 初始化（修正版🔥）
+# =========================
+if "init_done" not in st.session_state:
+
+    # 第一次沒有資料 → 等 JS
+    if not ls_data:
+        st.stop()
+
+    try:
+        st.session_state.watchlist = json.loads(ls_data)
+    except:
         st.session_state.watchlist = DEFAULT_STOCKS
+
+    st.session_state.init_done = True
+    st.rerun()
 
 # =========================
 # 股票資料
@@ -84,9 +95,7 @@ def fetch_price(stock_id):
         df = ticker.history(period="2d")
         if df.empty:
             return None, None
-        price = df["Close"].iloc[-1]
-        prev = df["Close"].iloc[-2]
-        return float(price), float(prev)
+        return float(df["Close"].iloc[-1]), float(df["Close"].iloc[-2])
     except:
         return None, None
 
@@ -95,7 +104,7 @@ def fetch_price(stock_id):
 # =========================
 st.title("📈 台股看盤")
 
-# 新增股票
+# 新增
 new_id = st.text_input("輸入股票代碼")
 
 if st.button("新增股票"):
@@ -106,12 +115,10 @@ if st.button("新增股票"):
                 "name": new_id
             })
             ls_save(st.session_state.watchlist)
-            st.success("已新增")
-        else:
-            st.warning("已存在")
+            st.rerun()
 
 # =========================
-# 顯示股票
+# 顯示
 # =========================
 for i, stock in enumerate(st.session_state.watchlist):
     price, prev = fetch_price(stock["id"])
@@ -119,7 +126,6 @@ for i, stock in enumerate(st.session_state.watchlist):
     if price and prev:
         change = price - prev
         pct = change / prev * 100
-
         color = "green" if change > 0 else "red" if change < 0 else "gray"
 
         st.markdown(f"""
@@ -131,7 +137,7 @@ for i, stock in enumerate(st.session_state.watchlist):
     else:
         st.write(f"{stock['id']} 無資料")
 
-    # 刪除按鈕
+    # 刪除
     if st.button(f"刪除 {stock['id']}", key=f"del_{i}"):
         st.session_state.watchlist.pop(i)
         ls_save(st.session_state.watchlist)

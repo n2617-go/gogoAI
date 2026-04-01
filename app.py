@@ -7,7 +7,7 @@ from datetime import datetime
 import time
 
 st.set_page_config(
-    page_title="台股看盤",
+    page_title="大師加持開發版（v2）",
     layout="centered",
     initial_sidebar_state="collapsed"
 )

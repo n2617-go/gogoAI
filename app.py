@@ -8,7 +8,7 @@ import time
 import json
 
 st.set_page_config(
-    page_title="台股看盤",
+    page_title="大師加持版",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
